@@ -1,0 +1,7 @@
+# Sub-projects are independent git repositories
+NDTCore.BE/
+NDTCore.FE/
+
+# Claude local overrides
+CLAUDE.local.md
+.claude/settings.local.json
