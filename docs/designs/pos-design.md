@@ -155,7 +155,7 @@ Mỗi option item:
 
 Hiển thị: `+8,000đ` nếu > 0, bỏ trống hoặc "Miễn phí" nếu = 0
 
-**Option không available tại store:** (`OptionStoreAvailability.IsAvailable = false`) → hiển thị mờ, strikethrough tên, không chọn được, không đếm vào MinSelect
+**Option không available tại store:** (`OptionStore.IsAvailable = false`) → hiển thị mờ, strikethrough tên, không chọn được, không đếm vào MinSelect
 
 **Pre-select:** Option có `ProductOptionConfig.IsDefault = true` → tự động chọn khi mở modal
 
