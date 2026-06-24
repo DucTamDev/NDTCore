@@ -254,6 +254,61 @@ git commit -m "feat: add IStoreService for cross-module store scope lookups"
 
 ---
 
+### Task B3: Siết quyền truy cập `OrderController` theo role
+
+**Files:**
+- Modify: `NDTCore.BE/src/NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs`
+
+**Interfaces:**
+- Consumes: `SystemRoles.{BrandManager,FranchiseeOwner,OrgAdmin,SuperAdmin}` (`NDTCore.BuildingBlocks.Core.Constants`, đã có sẵn).
+- Produces: không có API mới — chỉ siết quyền truy cập controller hiện có.
+
+- [ ] **Step 1: Thêm using + đổi `[Authorize]` thành `[Authorize(Roles = ...)]`, mirror đúng cú pháp của `PosController.cs:20`**
+
+```csharp
+// NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using NDTCore.API.Controllers.Base;
+using NDTCore.BuildingBlocks.Core.Constants;
+using NDTCore.Order.Application.Features.Orders.CancelOrder;
+using NDTCore.Order.Application.Features.Orders.CreateOrder;
+using NDTCore.Order.Application.Features.Orders.GetOrderById;
+using NDTCore.Order.Application.Features.Orders.GetPagedOrders;
+using NDTCore.Order.Application.Features.Orders.UpdateOrderStatus;
+using NDTCore.Order.Contracts.Models.Orders;
+using NDTCore.Order.Contracts.ViewModels.Orders;
+
+namespace NDTCore.API.Controllers.Modules.Order.Admin;
+
+/// <summary>
+/// VN: Quản lý đơn hàng dành cho admin. <br />
+/// EN: Admin order management endpoints.
+/// </summary>
+[Authorize(Roles = SystemRoles.BrandManager + "," + SystemRoles.FranchiseeOwner + "," + SystemRoles.OrgAdmin + "," + SystemRoles.SuperAdmin)]
+public class OrderController : AdminControllerBase
+{
+    // ... toàn bộ phần còn lại của class giữ nguyên không đổi (constructor, các action methods)
+}
+```
+
+Chỉ thay đổi 2 chỗ: thêm `using NDTCore.BuildingBlocks.Core.Constants;` và đổi attribute `[Authorize]` → `[Authorize(Roles = ...)]` ở dòng 19. Toàn bộ method bodies (`CreateOrder`, `GetPagedOrders`, `GetOrderById`, `UpdateOrderStatus`, `CancelOrder`) giữ nguyên 100%.
+
+- [ ] **Step 2: Build để verify**
+
+Run: `cd NDTCore.BE/src && dotnet build NDTCore.sln`
+Expected: Build succeeded, 0 Error(s).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add NDTCore.BE/src/NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs
+git commit -m "feat: restrict OrderController to admin-facing roles"
+```
+
+---
+
 ### Task B4: Thêm scope validation vào 4 handler của module Order
 
 **Files:**
@@ -2450,75 +2505,3 @@ Plan đã lưu tại `docs/superpowers/plans/2026-06-22-order-management-admin.m
 **2. Inline Execution** — thực thi tuần tự trong session này theo `executing-plans`, batch execution với checkpoint để review.
 
 **Bạn muốn dùng cách nào?**
-
-
-**Files:** không tạo/sửa file — chỉ verify thủ công.
-
-- [ ] **Step 1: Chạy API**
-
-Run: `cd NDTCore.BE/src/NDTCore.API && dotnet run`
-Expected: API khởi động thành công, Swagger UI truy cập được tại `https://localhost:<port>/swagger`.
-
-- [ ] **Step 2: Verify route thật của OrderController**
-
-Trong Swagger UI, xác nhận endpoint group hiển thị là `Order` với các path: `GET /api/admin/Order`, `GET /api/admin/Order/{id}`, `PATCH /api/admin/Order/{id}/status`, `POST /api/admin/Order/{id}/cancel`, `POST /api/admin/Order` — đúng route số ít đã xác nhận ở Task B3.
-
-- [ ] **Step 3: Verify scoping bằng tài khoản BrandManager và FranchiseeOwner**
-
-Login bằng tài khoản role `BrandManager`, gọi `GET /api/admin/Order?StoreId=<id của store thuộc brand khác>` → kỳ vọng `403 Forbidden`. Gọi lại với `StoreId` thuộc đúng brand mình → kỳ vọng `200 OK`. Lặp lại tương tự với tài khoản `FranchiseeOwner`.
-
----
-
-
-**Files:**
-- Modify: `NDTCore.BE/src/NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs`
-
-**Interfaces:**
-- Consumes: `SystemRoles.{BrandManager,FranchiseeOwner,OrgAdmin,SuperAdmin}` (`NDTCore.BuildingBlocks.Core.Constants`, đã có sẵn).
-- Produces: không có API mới — chỉ siết quyền truy cập controller hiện có.
-
-- [ ] **Step 1: Thêm using + đổi `[Authorize]` thành `[Authorize(Roles = ...)]`, mirror đúng cú pháp của `PosController.cs:20`**
-
-```csharp
-// NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs
-using MediatR;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using NDTCore.API.Controllers.Base;
-using NDTCore.BuildingBlocks.Core.Constants;
-using NDTCore.Order.Application.Features.Orders.CancelOrder;
-using NDTCore.Order.Application.Features.Orders.CreateOrder;
-using NDTCore.Order.Application.Features.Orders.GetOrderById;
-using NDTCore.Order.Application.Features.Orders.GetPagedOrders;
-using NDTCore.Order.Application.Features.Orders.UpdateOrderStatus;
-using NDTCore.Order.Contracts.Models.Orders;
-using NDTCore.Order.Contracts.ViewModels.Orders;
-
-namespace NDTCore.API.Controllers.Modules.Order.Admin;
-
-/// <summary>
-/// VN: Quản lý đơn hàng dành cho admin. <br />
-/// EN: Admin order management endpoints.
-/// </summary>
-[Authorize(Roles = SystemRoles.BrandManager + "," + SystemRoles.FranchiseeOwner + "," + SystemRoles.OrgAdmin + "," + SystemRoles.SuperAdmin)]
-public class OrderController : AdminControllerBase
-{
-    // ... toàn bộ phần còn lại của class giữ nguyên không đổi (constructor, các action methods)
-}
-```
-
-Chỉ thay đổi 2 chỗ: thêm `using NDTCore.BuildingBlocks.Core.Constants;` và đổi attribute `[Authorize]` → `[Authorize(Roles = ...)]` ở dòng 19. Toàn bộ method bodies (`CreateOrder`, `GetPagedOrders`, `GetOrderById`, `UpdateOrderStatus`, `CancelOrder`) giữ nguyên 100%.
-
-- [ ] **Step 2: Build để verify**
-
-Run: `cd NDTCore.BE/src && dotnet build NDTCore.sln`
-Expected: Build succeeded, 0 Error(s).
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add NDTCore.BE/src/NDTCore.API/Controllers/Modules/Order/Admin/OrderController.cs
-git commit -m "feat: restrict OrderController to admin-facing roles"
-```
-
----
