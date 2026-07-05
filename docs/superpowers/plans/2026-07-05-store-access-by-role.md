@@ -18,7 +18,7 @@
 - Không xử lý `BrandAccountant` trong scope này.
 - Không refactor `StoreScopeResolver` (Report module) — có logic tương tự nhưng ngoài phạm vi, giữ nguyên.
 - Không đổi hành vi hiện tại của `GetPagedOrders`/`GetOrderById`/`UpdateOrderStatus`/`CancelOrder` cho `BrandManager`/`FranchiseeOwner`/`SuperAdmin`/`OrgAdmin` — chỉ thêm nhánh mới bên cạnh cho store-staff.
-- `StoreFilterDto.StoreIds` không được client set qua query string (`[BindNever]`) — chỉ handler gán nội bộ.
+- `StoreFilterDto.StoreIds` chỉ được handler gán nội bộ (không dùng `[BindNever]` — xem lý do ở Task 1 Step 1); an toàn vì handler luôn ghi đè trước khi query và `ApplyFilters` kết hợp điều kiện bằng AND.
 - Filter theo `StoreIds` phải dùng `is not null` (không phải `Count: > 0`) — list rỗng vẫn phải áp dụng filter (trả về 0 kết quả), không được coi là "không giới hạn".
 
 ---
@@ -31,7 +31,7 @@
 - Modify: `NDTCore.BE/src/NDTCore.Modules/NDTCore.Store/NDTCore.Store.Application/Features/Stores/GetPagedStores/GetPagedStoresQueryHandler.cs`
 
 **Interfaces:**
-- Produces: `StoreFilterDto.StoreIds` (`IReadOnlyCollection<int>?`, `[BindNever]`) — set nội bộ bởi `GetPagedStoresQueryHandler`, đọc bởi `AppStoreRepository.ApplyFilters`.
+- Produces: `StoreFilterDto.StoreIds` (`IReadOnlyCollection<int>?`, public setter, không `[BindNever]` — xem Step 1) — set nội bộ bởi `GetPagedStoresQueryHandler`, đọc bởi `AppStoreRepository.ApplyFilters`.
 - Consumes: `IAppStoreRepository.GetStoreIdsByUserIdAsync(Guid userId, CancellationToken)` (đã có sẵn, không đổi signature).
 - Không đổi bất kỳ interface public nào khác — `IAppStoreRepository`/`IStoreService` giữ nguyên signature.
 
