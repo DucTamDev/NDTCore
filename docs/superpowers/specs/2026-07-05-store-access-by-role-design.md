@@ -24,18 +24,21 @@
 
 ### 1. Store list scoping (BE) — dùng chung cho "Bán hàng" + "Cửa hàng"
 
-**`StoreFilterDto`** (`NDTCore.Store.Contracts/Models/Stores/StoreFilterDto.cs`): thêm property mới, không bind từ query string của client (chỉ set nội bộ bởi handler):
+**`StoreFilterDto`** (`NDTCore.Store.Contracts/Models/Stores/StoreFilterDto.cs`): thêm property mới, đánh dấu `[BindNever]` để đảm bảo **không thể** bind từ query string của client (chỉ set nội bộ bởi handler, dù filter được combine an toàn ngay cả khi bind được — xem ghi chú bên dưới):
 
 ```csharp
+[BindNever]
 public IReadOnlyCollection<int>? StoreIds { get; set; }
 ```
 
-**`AppStoreRepository.ApplyFilters`** (`NDTCore.Store.Infrastructure/Repositories/AppStoreRepository.cs`): thêm điều kiện lọc:
+**`AppStoreRepository.ApplyFilters`** (`NDTCore.Store.Infrastructure/Repositories/AppStoreRepository.cs`): thêm điều kiện lọc — **dùng `is not null`, KHÔNG dùng `Count: > 0`**:
 
 ```csharp
-if (filter.StoreIds is { Count: > 0 })
+if (filter.StoreIds is not null)
     query = query.Where(u => filter.StoreIds.Contains(u.Id));
 ```
+
+> ⚠️ Lưu ý quan trọng: nếu dùng `filter.StoreIds is { Count: > 0 }`, một user `StoreManager`/`Cashier`/`OrderStaff` **chưa được gán vào store nào** (`GetStoreIdsByUserIdAsync` trả về list rỗng) sẽ bị coi như "không giới hạn" và thấy **tất cả** store trong tenant — ngược lại hoàn toàn với ý định. Phải phân biệt rõ `null` (không giới hạn — dùng cho SuperAdmin/OrgAdmin, không set `StoreIds`) và list rỗng (giới hạn về 0 kết quả — hợp lệ với EF Core, `Enumerable.Contains` trên list rỗng dịch đúng thành mệnh đề luôn `false`).
 
 **`GetPagedStoresQueryHandler`** (`NDTCore.Store.Application/Features/Stores/GetPagedStores/GetPagedStoresQueryHandler.cs`): thêm nhánh `else if` sau nhánh `BrandManager` hiện có:
 
@@ -102,6 +105,8 @@ if (store is null)
 
 **`PosController`** (`NDTCore.API/Controllers/Modules/Pos/PosController.cs`): thêm `SystemRoles.OrderStaff` vào `[Authorize(Roles=...)]` ở cấp controller (dòng 21) — áp dụng cho toàn bộ endpoint POS (store status, catalog, create order, get order, order history), khớp với permission `Order.CreateOrder` đã seed cho role này.
 
+> **Side-effect có lợi (cần test, không cần code thêm)**: `PosController.GetOrderById` dùng chung `GetOrderByIdQueryHandler`/`OrderScopeValidator` với `OrderController` (admin channel). Hiện tại, do `OrderScopeValidator` chưa hỗ trợ store-staff, nếu một `Cashier`/`StoreManager` gọi `GET /api/pos/orders/{id}` sẽ bị `Forbidden` sai (dù controller cho phép role này) — đây là bug có sẵn, độc lập với việc tạo đơn. Sau khi thêm nhánh `isStoreStaff` vào `OrderScopeValidator` (mục 3), bug này tự động được sửa luôn cho endpoint POS `GetOrderById`. Cần thêm case test cho endpoint này khi kiểm thử.
+
 ## Ngoài phạm vi (đã xác nhận với user)
 
 - Không gộp role `Cashier`/`OrderStaff` thành một.
@@ -112,4 +117,6 @@ if (store is null)
 ## Kiểm thử
 
 - BE: build solution; test thủ công/`dotnet test` (nếu có) cho `GetPagedStoresQueryHandler`, `OrderScopeValidator`, `CreateOrderCommandHandler` với các role: SuperAdmin, FranchiseeOwner (store trong/ngoài franchisee), Cashier/StoreManager/OrderStaff (store trong/ngoài `AppStoreUser`).
+- **Edge case bắt buộc**: Cashier/StoreManager/OrderStaff **chưa được gán vào store nào** (`AppStoreUser` rỗng) → danh sách store phải trả về **rỗng**, không phải toàn bộ tenant; tạo đơn cho storeId bất kỳ phải bị `Forbidden`.
+- POS: `GET /api/pos/orders/{id}` với Cashier/StoreManager cho đơn thuộc/không thuộc store của họ (xem side-effect ở mục 3).
 - FE: `npx vue-tsc --build`; kiểm tra trực quan trang "Cửa hàng" (dropdown biến mất, filter còn lại hoạt động, form tạo store vẫn chọn được brand/franchisee) và trang "Bán hàng" (danh sách store đúng theo role đăng nhập).
