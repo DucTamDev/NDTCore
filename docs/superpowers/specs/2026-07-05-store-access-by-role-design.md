@@ -24,10 +24,9 @@
 
 ### 1. Store list scoping (BE) — dùng chung cho "Bán hàng" + "Cửa hàng"
 
-**`StoreFilterDto`** (`NDTCore.Store.Contracts/Models/Stores/StoreFilterDto.cs`): thêm property mới, đánh dấu `[BindNever]` để đảm bảo **không thể** bind từ query string của client (chỉ set nội bộ bởi handler, dù filter được combine an toàn ngay cả khi bind được — xem ghi chú bên dưới):
+**`StoreFilterDto`** (`NDTCore.Store.Contracts/Models/Stores/StoreFilterDto.cs`): thêm property mới, chỉ set nội bộ bởi handler. **Không dùng `[BindNever]`** (`Microsoft.AspNetCore.Mvc.ModelBinding`) — `Store.Contracts` không target `Microsoft.NET.Sdk.Web`/không có `FrameworkReference` tới `Microsoft.AspNetCore.App`, và không có tiền lệ nào trong codebase dùng attribute đó, nên rủi ro không compile được. Vẫn an toàn dù property có thể bind từ query, vì (1) handler luôn ghi đè giá trị này cho role bị giới hạn scope trước khi query, (2) `ApplyFilters` kết hợp các điều kiện bằng AND nên input client (nếu có) chỉ thu hẹp thêm kết quả, không mở rộng quyền:
 
 ```csharp
-[BindNever]
 public IReadOnlyCollection<int>? StoreIds { get; set; }
 ```
 
