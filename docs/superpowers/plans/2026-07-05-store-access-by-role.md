@@ -675,3 +675,479 @@ Expected: đúng như mô tả.
 3. `GET /api/pos/orders/{id}` cho 1 đơn thuộc store khác (không phải store của user) → phải Forbidden (side-effect fix từ Task 2).
 
 Expected: cả 3 trường hợp đều bị chặn đúng, không rò rỉ dữ liệu/khả năng thao tác ngoài phạm vi.
+
+---
+
+### Task 5: BE — Đóng lỗ hổng IDOR ở 3 endpoint POS còn thiếu ownership check
+
+**Bối cảnh (phát hiện ở final whole-branch review sau Task 1-4):** `GetPosOrderHistoryQueryHandler`, `GetPosStoreStatusQueryHandler`, `GetPosCatalogQueryHandler` (3 endpoint còn lại của `PosController`, cạnh `CreateOrder`/`GetOrderById` đã được Task 2 bảo vệ) hoàn toàn không kiểm tra ownership — bất kỳ role nào qua được `[Authorize]` của controller đều đọc được order history/store status/catalog của **bất kỳ storeId nào** trong tenant. Việc Task 2 thêm `OrderStaff` vào `[Authorize]` của `PosController` vô tình mở rộng thêm phạm vi bị lộ trên 3 endpoint này.
+
+`OrderScopeValidator` là `internal` của `NDTCore.Order.Application` — không thể tái sử dụng trực tiếp từ `NDTCore.Store.Application` hay `NDTCore.Product.Application` (đảo ngược hướng dependency: Store/Product không nên phụ thuộc Order). Do đó mỗi module viết logic scope-check cục bộ riêng, dùng đúng interface public đã có sẵn (`IStoreService`/`IFranchiseeService`) — tương tự cách Report module đã có `StoreScopeResolver` riêng.
+
+**Files:**
+- Modify: `NDTCore.BE/src/NDTCore.Modules/NDTCore.Order/NDTCore.Order.Application/Features/Orders/GetPosOrderHistory/GetPosOrderHistoryQueryHandler.cs`
+- Modify: `NDTCore.BE/src/NDTCore.Modules/NDTCore.Store/NDTCore.Store.Application/Features/Pos/GetPosStoreStatus/GetPosStoreStatusQueryHandler.cs`
+- Modify: `NDTCore.BE/src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/Features/Pos/GetPosCatalog/GetPosCatalogQueryHandler.cs`
+- Modify: `NDTCore.BE/src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/NDTCore.Product.Application.csproj` (thêm 2 `ProjectReference` mới)
+
+**Interfaces:**
+- Consumes: `OrderScopeValidator.ValidateAsync` (đã có, dùng lại nguyên trạng cho Order module), `IStoreService.GetByIdAsync`/`GetStoreIdsByUserIdAsync` (Store.Contracts, public, đã có sẵn), `IFranchiseeService.GetFranchiseeByUserIdAsync` (Brand.Contracts, public, đã có sẵn).
+- Không đổi bất kỳ public interface nào — chỉ thêm dependency mới cho `Product.Application` (project reference, không phải thay đổi contract).
+
+- [ ] **Step 1: `GetPosOrderHistoryQueryHandler` — gọi `OrderScopeValidator` (giống 4 handler khác trong module)**
+
+Trong `NDTCore.BE/src/NDTCore.Modules/NDTCore.Order/NDTCore.Order.Application/Features/Orders/GetPosOrderHistory/GetPosOrderHistoryQueryHandler.cs`, tìm:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using NDTCore.BuildingBlocks.Abstractions.CQRS;
+using NDTCore.BuildingBlocks.Core.Results;
+using NDTCore.Order.Contracts.Interfaces.Repositories;
+using NDTCore.Order.Contracts.ViewModels.Orders;
+using OrderEntity = NDTCore.Order.Domain.Entities.Order;
+
+namespace NDTCore.Order.Application.Features.Orders.GetPosOrderHistory;
+
+/// <summary>
+/// VN: Xử lý <see cref="GetPosOrderHistoryQuery"/> — truy vấn đơn hàng trong ngày cho màn hình lịch sử POS. <br />
+/// EN: Handles <see cref="GetPosOrderHistoryQuery"/> — fetches today's orders for the POS history screen.
+/// </summary>
+public sealed class GetPosOrderHistoryQueryHandler
+    : IQueryHandler<GetPosOrderHistoryQuery, IReadOnlyList<PosOrderHistoryItemResponse>>
+{
+    private readonly ILogger<GetPosOrderHistoryQueryHandler> _logger;
+    private readonly IAppOrderRepository _orderRepository;
+
+    /// <summary>
+    /// VN: Khởi tạo một instance mới của <see cref="GetPosOrderHistoryQueryHandler"/>. <br />
+    /// EN: Initializes a new instance of the <see cref="GetPosOrderHistoryQueryHandler"/> class.
+    /// </summary>
+    public GetPosOrderHistoryQueryHandler(
+        ILogger<GetPosOrderHistoryQueryHandler> logger,
+        IAppOrderRepository orderRepository)
+    {
+        _logger        = logger;
+        _orderRepository = orderRepository;
+    }
+
+    /// <inheritdoc/>
+    public async Task<Result<IReadOnlyList<PosOrderHistoryItemResponse>>> Handle(
+        GetPosOrderHistoryQuery request,
+        CancellationToken cancellationToken)
+    {
+        var orders = await _orderRepository.GetTodayOrdersAsync(request.StoreId, request.FromDate, request.ToDate, cancellationToken);
+```
+
+Thay bằng:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using NDTCore.Brand.Contracts.Interfaces.Services;
+using NDTCore.BuildingBlocks.Abstractions.Contexts;
+using NDTCore.BuildingBlocks.Abstractions.CQRS;
+using NDTCore.BuildingBlocks.Core.Results;
+using NDTCore.Order.Application.Common;
+using NDTCore.Order.Contracts.Interfaces.Repositories;
+using NDTCore.Order.Contracts.ViewModels.Orders;
+using NDTCore.Store.Contracts.Interfaces.Services;
+using OrderEntity = NDTCore.Order.Domain.Entities.Order;
+
+namespace NDTCore.Order.Application.Features.Orders.GetPosOrderHistory;
+
+/// <summary>
+/// VN: Xử lý <see cref="GetPosOrderHistoryQuery"/> — truy vấn đơn hàng trong ngày cho màn hình lịch sử POS. <br />
+/// EN: Handles <see cref="GetPosOrderHistoryQuery"/> — fetches today's orders for the POS history screen.
+/// </summary>
+public sealed class GetPosOrderHistoryQueryHandler
+    : IQueryHandler<GetPosOrderHistoryQuery, IReadOnlyList<PosOrderHistoryItemResponse>>
+{
+    private readonly ILogger<GetPosOrderHistoryQueryHandler> _logger;
+    private readonly IAppOrderRepository _orderRepository;
+    private readonly INdtContextAccessor _contextAccessor;
+    private readonly IBrandService _brandService;
+    private readonly IFranchiseeService _franchiseeService;
+    private readonly IStoreService _storeService;
+
+    /// <summary>
+    /// VN: Khởi tạo một instance mới của <see cref="GetPosOrderHistoryQueryHandler"/>. <br />
+    /// EN: Initializes a new instance of the <see cref="GetPosOrderHistoryQueryHandler"/> class.
+    /// </summary>
+    public GetPosOrderHistoryQueryHandler(
+        ILogger<GetPosOrderHistoryQueryHandler> logger,
+        IAppOrderRepository orderRepository,
+        INdtContextAccessor contextAccessor,
+        IBrandService brandService,
+        IFranchiseeService franchiseeService,
+        IStoreService storeService)
+    {
+        _logger        = logger;
+        _orderRepository = orderRepository;
+        _contextAccessor = contextAccessor;
+        _brandService = brandService;
+        _franchiseeService = franchiseeService;
+        _storeService = storeService;
+    }
+
+    /// <inheritdoc/>
+    public async Task<Result<IReadOnlyList<PosOrderHistoryItemResponse>>> Handle(
+        GetPosOrderHistoryQuery request,
+        CancellationToken cancellationToken)
+    {
+        var scopeError = await OrderScopeValidator.ValidateAsync(
+            _contextAccessor, _brandService, _franchiseeService, _storeService,
+            request.StoreId, cancellationToken);
+
+        if (scopeError is not null)
+        {
+            _logger.LogWarning(
+                "[{ClassName}.{FunctionName}] POS order history scope validation failed: StoreId={StoreId}, ErrorCode={ErrorCode}",
+                nameof(GetPosOrderHistoryQueryHandler),
+                nameof(Handle),
+                request.StoreId,
+                scopeError.ErrorCode);
+
+            return Result<IReadOnlyList<PosOrderHistoryItemResponse>>.Failure(scopeError);
+        }
+
+        var orders = await _orderRepository.GetTodayOrdersAsync(request.StoreId, request.FromDate, request.ToDate, cancellationToken);
+```
+
+- [ ] **Step 2: `GetPosStoreStatusQueryHandler` — thêm scope check cục bộ (Store module không phụ thuộc Order.Application)**
+
+Thay toàn bộ nội dung `NDTCore.BE/src/NDTCore.Modules/NDTCore.Store/NDTCore.Store.Application/Features/Pos/GetPosStoreStatus/GetPosStoreStatusQueryHandler.cs`:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using NDTCore.Brand.Contracts.Interfaces.Services;
+using NDTCore.BuildingBlocks.Abstractions.Contexts;
+using NDTCore.BuildingBlocks.Abstractions.CQRS;
+using NDTCore.BuildingBlocks.Core.Constants;
+using NDTCore.BuildingBlocks.Core.Results;
+using NDTCore.Store.Contracts.Interfaces.Repositories;
+using NDTCore.Store.Contracts.ViewModels.Pos;
+using NDTCore.Store.Domain.Entities;
+
+namespace NDTCore.Store.Application.Features.Pos.GetPosStoreStatus;
+
+/// <summary>
+/// VN: Handler xử lý query lấy trạng thái cửa hàng cho POS — kiểm tra phạm vi truy cập theo role trước khi trả dữ liệu
+/// (SuperAdmin/OrgAdmin không giới hạn; FranchiseeOwner chỉ store thuộc franchisee của họ; StoreManager/Cashier/OrderStaff
+/// chỉ store họ là thành viên qua AppStoreUser). <br />
+/// EN: Handler for the POS store status query — validates role-based access scope before returning data
+/// (SuperAdmin/OrgAdmin unrestricted; FranchiseeOwner limited to their franchisee's stores; StoreManager/Cashier/OrderStaff
+/// limited to stores they are a member of via AppStoreUser).
+/// </summary>
+public sealed class GetPosStoreStatusQueryHandler : IQueryHandler<GetPosStoreStatusQuery, PosStoreStatusResponse>
+{
+    private readonly ILogger<GetPosStoreStatusQueryHandler> _logger;
+    private readonly IAppStoreRepository _storeRepository;
+    private readonly INdtContextAccessor _contextAccessor;
+    private readonly IFranchiseeService _franchiseeService;
+
+    /// <summary>
+    /// VN: Khởi tạo handler với logger, repository cửa hàng và các dịch vụ kiểm tra phạm vi truy cập. <br />
+    /// EN: Initializes the handler with logger, store repository, and access-scope services.
+    /// </summary>
+    public GetPosStoreStatusQueryHandler(
+        ILogger<GetPosStoreStatusQueryHandler> logger,
+        IAppStoreRepository storeRepository,
+        INdtContextAccessor contextAccessor,
+        IFranchiseeService franchiseeService)
+    {
+        _logger = logger;
+        _storeRepository = storeRepository;
+        _contextAccessor = contextAccessor;
+        _franchiseeService = franchiseeService;
+    }
+
+    /// <inheritdoc/>
+    public async Task<Result<PosStoreStatusResponse>> Handle(
+        GetPosStoreStatusQuery request,
+        CancellationToken cancellationToken)
+    {
+        var store = await _storeRepository.GetByIdAsync(request.StoreId, cancellationToken);
+
+        if (store is null)
+        {
+            _logger.LogWarning(
+                "[{ClassName}.{FunctionName}] Store not found: StoreId={StoreId}",
+                nameof(GetPosStoreStatusQueryHandler),
+                nameof(Handle),
+                request.StoreId);
+
+            return Result<PosStoreStatusResponse>.Failure(
+                Error.NotFound($"Store '{request.StoreId}' was not found."));
+        }
+
+        var scopeError = await ValidateStoreAccessAsync(store, cancellationToken);
+
+        if (scopeError is not null)
+        {
+            _logger.LogWarning(
+                "[{ClassName}.{FunctionName}] POS store status scope validation failed: StoreId={StoreId}, ErrorCode={ErrorCode}",
+                nameof(GetPosStoreStatusQueryHandler),
+                nameof(Handle),
+                request.StoreId,
+                scopeError.ErrorCode);
+
+            return Result<PosStoreStatusResponse>.Failure(scopeError);
+        }
+
+        _logger.LogInformation(
+            "[{ClassName}.{FunctionName}] POS store status loaded: StoreId={StoreId}, IsAcceptingOrders={IsAcceptingOrders}",
+            nameof(GetPosStoreStatusQueryHandler),
+            nameof(Handle),
+            store.Id,
+            store.IsAcceptingOrders);
+
+        return Result<PosStoreStatusResponse>.Success(new PosStoreStatusResponse
+        {
+            StoreId           = store.Id,
+            StoreName         = store.Name,
+            LogoUrl           = store.LogoUrl,
+            Address           = store.Address,
+            City              = store.City,
+            District          = store.District,
+            Province          = store.Province,
+            Phone             = store.Phone,
+            IsAcceptingOrders = store.IsAcceptingOrders,
+            HasOpenShift      = true,  // Shift management not yet implemented — always open
+            ShiftId           = null,
+            ShiftOpenedAt     = null,
+            ShiftOpenedBy     = null,
+        });
+    }
+
+    /// <summary>
+    /// VN: Kiểm tra phạm vi truy cập của user hiện tại đối với store — chỉ chấp nhận role được phép ở `PosController`
+    /// (SuperAdmin/OrgAdmin/FranchiseeOwner/StoreManager/Cashier/OrderStaff). <br />
+    /// EN: Validates the current user's access scope for the store — only roles permitted at `PosController`
+    /// are accepted (SuperAdmin/OrgAdmin/FranchiseeOwner/StoreManager/Cashier/OrderStaff).
+    /// </summary>
+    /// <param name="store">
+    /// VN: Store cần kiểm tra. <br />
+    /// EN: The store to validate against.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// VN: Token để huỷ thao tác bất đồng bộ. <br />
+    /// EN: A token to cancel the asynchronous operation.
+    /// </param>
+    /// <returns>
+    /// VN: <see langword="null"/> nếu hợp lệ; ngược lại <see cref="Error"/> mô tả lý do từ chối. <br />
+    /// EN: <see langword="null"/> if valid; otherwise an <see cref="Error"/> describing the rejection reason.
+    /// </returns>
+    private async Task<Error?> ValidateStoreAccessAsync(AppStore store, CancellationToken cancellationToken)
+    {
+        var userIdRaw = _contextAccessor.Context?.UserId;
+
+        if (userIdRaw is null || !Guid.TryParse(userIdRaw, out var userId))
+            return Error.Unauthorized("User context is missing.");
+
+        var roles = _contextAccessor.Context?.Roles ?? [];
+
+        if (roles.Contains(SystemRoles.SuperAdmin) || roles.Contains(SystemRoles.OrgAdmin))
+            return null;
+
+        if (roles.Contains(SystemRoles.StoreManager)
+            || roles.Contains(SystemRoles.Cashier)
+            || roles.Contains(SystemRoles.OrderStaff))
+        {
+            var storeIds = await _storeRepository.GetStoreIdsByUserIdAsync(userId, cancellationToken);
+
+            return storeIds.Contains(store.Id)
+                ? null
+                : Error.Forbidden("Store does not belong to your assigned stores.");
+        }
+
+        if (roles.Contains(SystemRoles.FranchiseeOwner))
+        {
+            var franchisee = await _franchiseeService.GetFranchiseeByUserIdAsync(userId, cancellationToken);
+
+            if (franchisee is null)
+                return Error.Unauthorized("No franchisee found for the user.");
+
+            return store.FranchiseeId == franchisee.Id
+                ? null
+                : Error.Forbidden("Store does not belong to your franchisee.");
+        }
+
+        return Error.Forbidden("Role is not permitted to access this store.");
+    }
+}
+```
+
+- [ ] **Step 3: Thêm 2 `ProjectReference` mới cho `NDTCore.Product.Application`**
+
+Trong `NDTCore.BE/src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/NDTCore.Product.Application.csproj`, tìm:
+
+```xml
+  <ItemGroup>
+    <ProjectReference Include="..\NDTCore.Product.Contracts\NDTCore.Product.Contracts.csproj" />
+  </ItemGroup>
+```
+
+Thay bằng:
+
+```xml
+  <ItemGroup>
+    <ProjectReference Include="..\NDTCore.Product.Contracts\NDTCore.Product.Contracts.csproj" />
+    <ProjectReference Include="..\..\NDTCore.Store\NDTCore.Store.Contracts\NDTCore.Store.Contracts.csproj" />
+    <ProjectReference Include="..\..\NDTCore.Brand\NDTCore.Brand.Contracts\NDTCore.Brand.Contracts.csproj" />
+  </ItemGroup>
+```
+
+- [ ] **Step 4: `GetPosCatalogQueryHandler` — thêm scope check cục bộ (dùng `IStoreService`/`IFranchiseeService` public, không phụ thuộc Order.Application)**
+
+Thay toàn bộ nội dung `NDTCore.BE/src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/Features/Pos/GetPosCatalog/GetPosCatalogQueryHandler.cs`:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using NDTCore.Brand.Contracts.Interfaces.Services;
+using NDTCore.BuildingBlocks.Abstractions.Contexts;
+using NDTCore.BuildingBlocks.Abstractions.CQRS;
+using NDTCore.BuildingBlocks.Core.Constants;
+using NDTCore.BuildingBlocks.Core.Results;
+using NDTCore.Product.Contracts.Interfaces.Repositories;
+using NDTCore.Product.Contracts.ViewModels.Pos;
+using NDTCore.Store.Contracts.Interfaces.Services;
+
+namespace NDTCore.Product.Application.Features.Pos.GetPosCatalog;
+
+/// <summary>
+/// VN: Xử lý query lấy catalog POS — kiểm tra phạm vi truy cập theo role trước khi uỷ thác cho repository. <br />
+/// EN: Handles the POS catalog query — validates role-based access scope before delegating to the repository.
+/// </summary>
+public sealed class GetPosCatalogQueryHandler : IQueryHandler<GetPosCatalogQuery, PosCatalogResponse>
+{
+    private readonly ILogger<GetPosCatalogQueryHandler> _logger;
+    private readonly IPosCatalogRepository _posCatalogRepository;
+    private readonly INdtContextAccessor _contextAccessor;
+    private readonly IFranchiseeService _franchiseeService;
+    private readonly IStoreService _storeService;
+
+    /// <summary>
+    /// VN: Khởi tạo handler với logger, repository và các dịch vụ kiểm tra phạm vi truy cập. <br />
+    /// EN: Initializes the handler with logger, repository, and access-scope services.
+    /// </summary>
+    public GetPosCatalogQueryHandler(
+        ILogger<GetPosCatalogQueryHandler> logger,
+        IPosCatalogRepository posCatalogRepository,
+        INdtContextAccessor contextAccessor,
+        IFranchiseeService franchiseeService,
+        IStoreService storeService)
+    {
+        _logger = logger;
+        _posCatalogRepository = posCatalogRepository;
+        _contextAccessor = contextAccessor;
+        _franchiseeService = franchiseeService;
+        _storeService = storeService;
+    }
+
+    /// <inheritdoc/>
+    public async Task<Result<PosCatalogResponse>> Handle(
+        GetPosCatalogQuery request,
+        CancellationToken cancellationToken)
+    {
+        var scopeError = await ValidateStoreAccessAsync(request.StoreId, cancellationToken);
+
+        if (scopeError is not null)
+        {
+            _logger.LogWarning(
+                "[{ClassName}.{FunctionName}] POS catalog scope validation failed: StoreId={StoreId}, ErrorCode={ErrorCode}",
+                nameof(GetPosCatalogQueryHandler),
+                nameof(Handle),
+                request.StoreId,
+                scopeError.ErrorCode);
+
+            return Result<PosCatalogResponse>.Failure(scopeError);
+        }
+
+        var catalog = await _posCatalogRepository.GetCatalogAsync(request.StoreId, cancellationToken);
+
+        _logger.LogInformation(
+            "[{ClassName}.{FunctionName}] POS catalog loaded: StoreId={StoreId}, Products={ProductCount}, Categories={CategoryCount}",
+            nameof(GetPosCatalogQueryHandler),
+            nameof(Handle),
+            catalog.Products.Count,
+            catalog.Categories.Count);
+
+        return Result<PosCatalogResponse>.Success(catalog);
+    }
+
+    /// <summary>
+    /// VN: Kiểm tra phạm vi truy cập của user hiện tại đối với store — chỉ chấp nhận role được phép ở `PosController`
+    /// (SuperAdmin/OrgAdmin/FranchiseeOwner/StoreManager/Cashier/OrderStaff). <br />
+    /// EN: Validates the current user's access scope for the store — only roles permitted at `PosController`
+    /// are accepted (SuperAdmin/OrgAdmin/FranchiseeOwner/StoreManager/Cashier/OrderStaff).
+    /// </summary>
+    /// <param name="storeId">
+    /// VN: ID store cần kiểm tra. <br />
+    /// EN: The store ID to validate against.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// VN: Token để huỷ thao tác bất đồng bộ. <br />
+    /// EN: A token to cancel the asynchronous operation.
+    /// </param>
+    /// <returns>
+    /// VN: <see langword="null"/> nếu hợp lệ; ngược lại <see cref="Error"/> mô tả lý do từ chối. <br />
+    /// EN: <see langword="null"/> if valid; otherwise an <see cref="Error"/> describing the rejection reason.
+    /// </returns>
+    private async Task<Error?> ValidateStoreAccessAsync(int storeId, CancellationToken cancellationToken)
+    {
+        var userIdRaw = _contextAccessor.Context?.UserId;
+
+        if (userIdRaw is null || !Guid.TryParse(userIdRaw, out var userId))
+            return Error.Unauthorized("User context is missing.");
+
+        var roles = _contextAccessor.Context?.Roles ?? [];
+
+        if (roles.Contains(SystemRoles.SuperAdmin) || roles.Contains(SystemRoles.OrgAdmin))
+            return null;
+
+        if (roles.Contains(SystemRoles.StoreManager)
+            || roles.Contains(SystemRoles.Cashier)
+            || roles.Contains(SystemRoles.OrderStaff))
+        {
+            var storeIds = await _storeService.GetStoreIdsByUserIdAsync(userId, cancellationToken);
+
+            return storeIds.Contains(storeId)
+                ? null
+                : Error.Forbidden("Store does not belong to your assigned stores.");
+        }
+
+        if (roles.Contains(SystemRoles.FranchiseeOwner))
+        {
+            var store = await _storeService.GetByIdAsync(storeId, cancellationToken);
+
+            if (store is null)
+                return Error.NotFound($"Store '{storeId}' was not found.");
+
+            var franchisee = await _franchiseeService.GetFranchiseeByUserIdAsync(userId, cancellationToken);
+
+            if (franchisee is null)
+                return Error.Unauthorized("No franchisee found for the user.");
+
+            return store.FranchiseeId == franchisee.Id
+                ? null
+                : Error.Forbidden("Store does not belong to your franchisee.");
+        }
+
+        return Error.Forbidden("Role is not permitted to access this store.");
+    }
+}
+```
+
+**Lưu ý DRY đã cân nhắc**: logic scope-check ở Step 2/4 trùng lặp với `OrderScopeValidator` (Order module) — đây là đánh đổi có chủ đích, không phải sơ suất: `Store.Application`/`Product.Application` không nên phụ thuộc ngược vào `Order.Application` (đảo hướng dependency trong modular monolith), nên mỗi module giữ bản scope-check cục bộ riêng dùng interface public của module khác (`IStoreService`/`IFranchiseeService`) — đúng tinh thần Report module đã làm với `StoreScopeResolver` từ trước.
+
+- [ ] **Step 5: Build**
+
+Run: `cd NDTCore.BE/src && dotnet build NDTCore.sln`
+Expected: `Build succeeded. 0 Error(s)`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd NDTCore.BE
+git add src/NDTCore.Modules/NDTCore.Order/NDTCore.Order.Application/Features/Orders/GetPosOrderHistory/GetPosOrderHistoryQueryHandler.cs src/NDTCore.Modules/NDTCore.Store/NDTCore.Store.Application/Features/Pos/GetPosStoreStatus/GetPosStoreStatusQueryHandler.cs src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/Features/Pos/GetPosCatalog/GetPosCatalogQueryHandler.cs src/NDTCore.Modules/NDTCore.Product/NDTCore.Product.Application/NDTCore.Product.Application.csproj
+git commit -m "fix: dong lo hong IDOR o GetPosOrderHistory/GetPosStoreStatus/GetPosCatalog"
+```
