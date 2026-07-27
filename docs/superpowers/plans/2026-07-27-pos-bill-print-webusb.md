@@ -31,7 +31,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: global `Navigator.usb`/`USBDevice`/`USBConfiguration`/`USBInterface`/`USBAlternateInterface`/`USBEndpoint`/`USBInTransferResult`/`USBOutTransferResult` types (from `@types/w3c-web-usb`, consumed by Task 4); a typed default export from `@point-of-sale/receipt-printer-encoder` (consumed by Task 5).
+- Produces: global `Navigator.usb`/`USBDevice`/`USBConfiguration`/`USBInterface`/`USBAlternateInterface`/`USBEndpoint`/`USBInTransferResult`/`USBOutTransferResult` types (from `@types/w3c-web-usb`, consumed by Task 5); a typed default export from `@point-of-sale/receipt-printer-encoder` (consumed by Task 6).
 
 - [ ] **Step 1: Install the runtime dependency**
 
@@ -106,33 +106,82 @@ git commit -m "chore: add receipt-printer-encoder dependency and WebUSB ambient 
 
 ---
 
-## Task 2: `buildBillCanvas` — render the bill as a black-and-white canvas
+## Task 2: Extract shared bill formatting helpers
 
 **Files:**
-- Create: `NDTCore.FE/src/modules/pos/utils/build-bill-canvas.util.ts`
+- Create: `NDTCore.FE/src/modules/pos/utils/bill-format.util.ts`
+- Modify: `NDTCore.FE/src/modules/pos/utils/build-bill-html.util.ts`
 
 **Interfaces:**
-- Consumes: `GetOrderDetailDto`, `GetOrderItemDto`, `GetOrderItemOptionDto` (from `../models/dtos/pos-order.dto`, unchanged); `BillStoreInfo` (from `../utils/build-bill-html.util`, unchanged: `{ name: string; address: string; hotline: string | null }`).
-- Produces: `buildBillCanvas(order: GetOrderDetailDto, store: BillStoreInfo): HTMLCanvasElement` — consumed by Task 5's `usePrintBillUsb`. Canvas `width` is always `576`; `height` is always a positive multiple of `8`.
+- Consumes: `GetOrderItemOptionDto` (from `../models/dtos/pos-order.dto`, unchanged).
+- Produces: `PAYMENT_METHOD_LABEL: Record<string, string>`, `SERVICE_TYPE_LABEL: Record<string, string>`, `formatCurrency(value: number): string`, `formatDateTime(iso: string | null): string`, `isSizeOption(o: GetOrderItemOptionDto): boolean`, `groupOptionsByGroupName(options: GetOrderItemOptionDto[]): { groupName: string; options: GetOrderItemOptionDto[] }[]` — consumed by both `build-bill-html.util.ts` (this task) and Task 3's `build-bill-canvas.util.ts`.
 
-- [ ] **Step 1: Create the file**
+`build-bill-html.util.ts` and the new `build-bill-canvas.util.ts` (Task 3) render the same order data through two independent layout engines (HTML/CSS vs. canvas) — the two layouts must stay independent, but the plain data-formatting logic (currency/date formatting, option grouping, status labels) has nothing to do with which renderer is used, so it moves to one shared file instead of being duplicated.
+
+- [ ] **Step 1: Create the shared helpers file**
 
 ```ts
-import type { GetOrderDetailDto, GetOrderItemDto, GetOrderItemOptionDto } from '../models/dtos/pos-order.dto'
-import type { BillStoreInfo } from './build-bill-html.util'
+import type { GetOrderItemOptionDto } from '../models/dtos/pos-order.dto'
 
-const CANVAS_WIDTH = 576
-const PADDING_X = 20
-const CONTENT_WIDTH = CANVAS_WIDTH - PADDING_X * 2
-const FONT_SIZE = 26
-const SUB_FONT_SIZE = 22
-const LINE_HEIGHT = 34
-const SUB_LINE_HEIGHT = 28
-const DIVIDER_HEIGHT = 20
-const FONT = `${FONT_SIZE}px monospace`
-const BOLD_FONT = `bold ${FONT_SIZE}px monospace`
-const SUB_FONT = `${SUB_FONT_SIZE}px monospace`
-const ITALIC_FONT = `italic ${SUB_FONT_SIZE}px monospace`
+export const PAYMENT_METHOD_LABEL: Record<string, string> = {
+    Cash: 'Tiền mặt',
+    Card: 'Thẻ',
+    Transfer: 'Chuyển khoản',
+    EWallet: 'Ví điện tử',
+}
+
+export const SERVICE_TYPE_LABEL: Record<string, string> = {
+    TakeAway: 'Mang đi',
+    DineIn: 'Ngồi lại',
+    Delivery: 'Giao hàng',
+}
+
+export function formatCurrency(value: number): string {
+    return `${value.toLocaleString('vi-VN')}₫`
+}
+
+export function formatDateTime(iso: string | null): string {
+    if (!iso) return ''
+    return new Date(iso).toLocaleString('vi-VN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    })
+}
+
+export function isSizeOption(o: GetOrderItemOptionDto): boolean {
+    return (o.GroupName ?? '').toLowerCase() === 'size'
+}
+
+export function groupOptionsByGroupName(options: GetOrderItemOptionDto[]): { groupName: string; options: GetOrderItemOptionDto[] }[] {
+    const map = new Map<string, { groupName: string; options: GetOrderItemOptionDto[] }>()
+    for (const opt of options) {
+        const key = opt.GroupName ?? ''
+        if (!map.has(key)) {
+            map.set(key, { groupName: opt.GroupName ?? '', options: [] })
+        }
+        map.get(key)!.options.push(opt)
+    }
+    return Array.from(map.values())
+}
+```
+
+Save this as `NDTCore.FE/src/modules/pos/utils/bill-format.util.ts`.
+
+- [ ] **Step 2: Update `build-bill-html.util.ts` to import the shared helpers instead of defining its own**
+
+In `NDTCore.FE/src/modules/pos/utils/build-bill-html.util.ts`, change the top of the file from:
+```ts
+import { POS_PRINT_ROOT_ID } from '../constants/print-bill.constants'
+import type { GetOrderDetailDto, GetOrderItemDto, GetOrderItemOptionDto } from '../models/dtos/pos-order.dto'
+
+export interface BillStoreInfo {
+    name: string
+    address: string
+    hotline: string | null
+}
 
 const PAYMENT_METHOD_LABEL: Record<string, string> = {
     Cash: 'Tiền mặt',
@@ -177,6 +226,80 @@ function groupOptionsByGroupName(options: GetOrderItemOptionDto[]): { groupName:
     }
     return Array.from(map.values())
 }
+```
+to:
+```ts
+import { POS_PRINT_ROOT_ID } from '../constants/print-bill.constants'
+import {
+    PAYMENT_METHOD_LABEL,
+    SERVICE_TYPE_LABEL,
+    formatCurrency,
+    formatDateTime,
+    isSizeOption,
+    groupOptionsByGroupName,
+} from './bill-format.util'
+import type { GetOrderDetailDto, GetOrderItemDto } from '../models/dtos/pos-order.dto'
+
+export interface BillStoreInfo {
+    name: string
+    address: string
+    hotline: string | null
+}
+```
+The rest of the file (`renderItemBlock`, `buildBillHtml`, and everything below) is unchanged — it already calls `formatCurrency`, `formatDateTime`, `isSizeOption`, `groupOptionsByGroupName`, `PAYMENT_METHOD_LABEL`, and `SERVICE_TYPE_LABEL` by these exact names, which now resolve to the imports instead of local definitions. Note `GetOrderItemOptionDto` is dropped from this file's own type-only import since nothing in the remaining code references it directly by name (it was only used by the two functions that moved out).
+
+- [ ] **Step 3: Verify compilation**
+
+Run:
+```bash
+cd NDTCore.FE && npm run type-check
+```
+Expected: `0` errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/modules/pos/utils/bill-format.util.ts src/modules/pos/utils/build-bill-html.util.ts
+git commit -m "refactor: extract shared bill formatting helpers"
+```
+
+---
+
+## Task 3: `buildBillCanvas` — render the bill as a black-and-white canvas
+
+**Files:**
+- Create: `NDTCore.FE/src/modules/pos/utils/build-bill-canvas.util.ts`
+
+**Interfaces:**
+- Consumes: `GetOrderDetailDto`, `GetOrderItemDto`, `GetOrderItemOptionDto` (from `../models/dtos/pos-order.dto`, unchanged); `BillStoreInfo` (from `../utils/build-bill-html.util`, unchanged: `{ name: string; address: string; hotline: string | null }`); `PAYMENT_METHOD_LABEL`, `SERVICE_TYPE_LABEL`, `formatCurrency`, `formatDateTime`, `isSizeOption`, `groupOptionsByGroupName` (Task 2's `bill-format.util.ts`).
+- Produces: `buildBillCanvas(order: GetOrderDetailDto, store: BillStoreInfo): HTMLCanvasElement` — consumed by Task 6's `usePrintBillUsb`. Canvas `width` is always `576`; `height` is always a positive multiple of `8`.
+
+- [ ] **Step 1: Create the file**
+
+```ts
+import type { GetOrderDetailDto, GetOrderItemDto, GetOrderItemOptionDto } from '../models/dtos/pos-order.dto'
+import type { BillStoreInfo } from './build-bill-html.util'
+import {
+    PAYMENT_METHOD_LABEL,
+    SERVICE_TYPE_LABEL,
+    formatCurrency,
+    formatDateTime,
+    isSizeOption,
+    groupOptionsByGroupName,
+} from './bill-format.util'
+
+const CANVAS_WIDTH = 576
+const PADDING_X = 20
+const CONTENT_WIDTH = CANVAS_WIDTH - PADDING_X * 2
+const FONT_SIZE = 26
+const SUB_FONT_SIZE = 22
+const LINE_HEIGHT = 34
+const SUB_LINE_HEIGHT = 28
+const DIVIDER_HEIGHT = 20
+const FONT = `${FONT_SIZE}px monospace`
+const BOLD_FONT = `bold ${FONT_SIZE}px monospace`
+const SUB_FONT = `${SUB_FONT_SIZE}px monospace`
+const ITALIC_FONT = `italic ${SUB_FONT_SIZE}px monospace`
 
 type DrawCommand =
     | { kind: 'line'; text: string; align: 'left' | 'center'; font: string; height: number }
@@ -366,14 +489,14 @@ git commit -m "feat: add canvas bill renderer for USB thermal printing"
 
 ---
 
-## Task 3: Storage key for the last-connected USB printer
+## Task 4: Storage key for the last-connected USB printer
 
 **Files:**
 - Modify: `NDTCore.FE/src/core/storage/storage.constant.ts`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `STORAGE_KEYS.POS_USB_PRINTER_DEVICE` — consumed by Task 4's `usb-printer.service.ts`.
+- Produces: `STORAGE_KEYS.POS_USB_PRINTER_DEVICE` — consumed by Task 5's `usb-printer.service.ts`.
 
 - [ ] **Step 1: Add the key**
 
@@ -410,14 +533,14 @@ git commit -m "feat: add storage key for last-connected USB printer device"
 
 ---
 
-## Task 4: `usb-printer.service.ts` — WebUSB connect/reconnect/print
+## Task 5: `usb-printer.service.ts` — WebUSB connect/reconnect/print
 
 **Files:**
 - Create: `NDTCore.FE/src/modules/pos/services/usb-printer.service.ts`
 
 **Interfaces:**
-- Consumes: `storageService` (from `@/core/storage/storage.service`, existing: `get<T>(key): T | null`, `set<T>(key, value): void`), `STORAGE_KEYS.POS_USB_PRINTER_DEVICE` (Task 3), global `navigator.usb`/`USBDevice` types (Task 1).
-- Produces: `usbPrinterService.ensureConnected(): Promise<void>` and `usbPrinterService.print(data: Uint8Array): Promise<void>` — both consumed by Task 5's `usePrintBillUsb`. `ensureConnected()` throws a plain `Error` with a Vietnamese message on any failure (unsupported browser, no device selected, no OUT endpoint found); `print()` throws if called before a successful `ensureConnected()`.
+- Consumes: `storageService` (from `@/core/storage/storage.service`, existing: `get<T>(key): T | null`, `set<T>(key, value): void`), `STORAGE_KEYS.POS_USB_PRINTER_DEVICE` (Task 4), global `navigator.usb`/`USBDevice` types (Task 1).
+- Produces: `usbPrinterService.ensureConnected(): Promise<void>` and `usbPrinterService.print(data: Uint8Array): Promise<void>` — both consumed by Task 6's `usePrintBillUsb`. `ensureConnected()` throws a plain `Error` with a Vietnamese message on any failure (unsupported browser, no device selected, no OUT endpoint found); `print()` throws if called before a successful `ensureConnected()`.
 
 - [ ] **Step 1: Create the file**
 
@@ -540,14 +663,14 @@ git commit -m "feat: add WebUSB printer connect/reconnect/print service"
 
 ---
 
-## Task 5: `usePrintBillUsb` composable
+## Task 6: `usePrintBillUsb` composable
 
 **Files:**
 - Create: `NDTCore.FE/src/modules/pos/composables/usePrintBillUsb.ts`
 
 **Interfaces:**
-- Consumes: `usbPrinterService` (Task 4), `buildBillCanvas` (Task 2), `posService.getOrderByIdAsync(id: number): Promise<GetOrderDetailDto | null>` (existing, unchanged), `usePosShiftStore()` (existing: `storeName`, `address`, `hotline`), `useToastNotification()` (existing), `ReceiptPrinterEncoder` (Task 1's ambient type over the Task 1 npm package).
-- Produces: `usePrintBillUsb(): { isPrinting: Ref<boolean>; printBillUsb: (orderId: number) => Promise<void> }` — consumed by Task 6's `PosOrderHistoryDrawer.vue`.
+- Consumes: `usbPrinterService` (Task 5), `buildBillCanvas` (Task 3), `posService.getOrderByIdAsync(id: number): Promise<GetOrderDetailDto | null>` (existing, unchanged), `usePosShiftStore()` (existing: `storeName`, `address`, `hotline`), `useToastNotification()` (existing), `ReceiptPrinterEncoder` (Task 1's ambient type over the Task 1 npm package).
+- Produces: `usePrintBillUsb(): { isPrinting: Ref<boolean>; printBillUsb: (orderId: number) => Promise<void> }` — consumed by Task 7's `PosOrderHistoryDrawer.vue`.
 
 - [ ] **Step 1: Create the file**
 
@@ -619,13 +742,13 @@ git commit -m "feat: add usePrintBillUsb composable"
 
 ---
 
-## Task 6: "In qua USB" button in `PosOrderHistoryDrawer.vue`
+## Task 7: "In qua USB" button in `PosOrderHistoryDrawer.vue`
 
 **Files:**
 - Modify: `NDTCore.FE/src/modules/pos/components/PosOrderHistoryDrawer.vue`
 
 **Interfaces:**
-- Consumes: `usePrintBillUsb()` (Task 5).
+- Consumes: `usePrintBillUsb()` (Task 6).
 - Produces: visible UI — terminal task, nothing else depends on it.
 
 - [ ] **Step 1: Import and call the composable**
