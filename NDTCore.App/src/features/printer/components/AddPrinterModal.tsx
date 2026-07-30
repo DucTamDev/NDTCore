@@ -29,7 +29,7 @@ export const AddPrinterModal: React.FC<AddPrinterModalProps> = ({ visible, initi
   const [selectedDevice, setSelectedDevice] = useState<PrinterDevice | undefined>(initialValues?.device);
   const [canTestPrint, setCanTestPrint] = useState(false);
 
-  const { control, handleSubmit, watch, formState } = useForm<PrinterFormValues>({
+  const { control, handleSubmit, watch, formState, setValue } = useForm<PrinterFormValues>({
     resolver: zodResolver(printerFormSchema),
     defaultValues: {
       printerName: initialValues?.printerName ?? '',
@@ -159,7 +159,10 @@ export const AddPrinterModal: React.FC<AddPrinterModalProps> = ({ visible, initi
             protocol={protocol}
             connectionType={connectionType}
             selectedDeviceId={selectedDevice?.deviceId}
-            onSelect={setSelectedDevice}
+            onSelect={(device) => {
+              setSelectedDevice(device);
+              setValue('selectedDeviceId', device.deviceId, { shouldValidate: true });
+            }}
           />
         )}
 
