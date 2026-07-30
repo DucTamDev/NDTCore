@@ -43,7 +43,13 @@ export const PrinterManagementPanel: React.FC = () => {
 
       <PrinterList printers={printers} onEdit={openEditModal} onChanged={refresh} />
 
-      <AddPrinterModal visible={modalVisible} initialValues={editingPrinter} onDismiss={closeModal} onSaved={onSaved} />
+      <AddPrinterModal
+        key={editingPrinter?.id ?? 'add'}
+        visible={modalVisible}
+        initialValues={editingPrinter}
+        onDismiss={closeModal}
+        onSaved={onSaved}
+      />
     </View>
   );
 };
