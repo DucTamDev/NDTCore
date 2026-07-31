@@ -1,6 +1,8 @@
 # Sub-projects are independent git repositories
 NDTCore.BE/
 NDTCore.FE/
+NDTCore.App/
+NDTCore.POS/
 
 # Claude local overrides
 CLAUDE.local.md
