@@ -40,7 +40,6 @@ export const DeviceScanList: React.FC<DeviceScanListProps> = ({
       }
     });
     return unsubscribe;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [protocol, connectionType, scanTrigger]);
 
   return (
@@ -59,6 +58,7 @@ export const DeviceScanList: React.FC<DeviceScanListProps> = ({
             key={device.deviceId}
             title={device.displayName}
             onPress={() => onSelect(device)}
+            // eslint-disable-next-line react/no-unstable-nested-components -- render-prop for List.Item's `right` slot, not a real component definition
             right={() => (selectedDeviceId === device.deviceId ? <List.Icon icon="check" /> : null)}
           />
         ))}

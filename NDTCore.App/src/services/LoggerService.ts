@@ -4,7 +4,6 @@ class LoggerServiceImpl {
   private write(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
     if (!__DEV__) return;
     const consoleMethod = level === 'warning' ? 'warn' : level;
-    // eslint-disable-next-line no-console
     console[consoleMethod](`[${level.toUpperCase()}] ${message}`, meta ?? '');
   }
 

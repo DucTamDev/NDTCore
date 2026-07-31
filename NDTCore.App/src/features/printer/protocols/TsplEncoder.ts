@@ -36,6 +36,7 @@ export class TsplEncoder {
     const payload = `${this.commands.join('\r\n')}\r\n`;
     const bytes = new Uint8Array(payload.length);
     for (let i = 0; i < payload.length; i += 1) {
+      // eslint-disable-next-line no-bitwise -- intentional single-byte masking to produce raw TSPL output bytes
       bytes[i] = payload.charCodeAt(i) & 0xff;
     }
     return bytes;
