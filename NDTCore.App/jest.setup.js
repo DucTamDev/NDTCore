@@ -1,3 +1,5 @@
+/* eslint-env jest */
+
 jest.mock('react-native-mmkv', () => {
   const store = new Map();
   return {
